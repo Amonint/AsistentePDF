@@ -1,8 +1,6 @@
-streamlit==1.32.0
+flask==3.0.0
+flask-cors==4.0.0
+langchain-community==0.0.10
+pinecone-client==3.0.0
 google-generativeai==0.3.2
-python-dotenv==1.0.0
-langchain==0.1.0
-PyPDF2==3.0.1
-chromadb==0.4.15
-faiss-cpu==1.7.4
-langchain_google_genai==0.1.0
+tiktoken==0.5.2

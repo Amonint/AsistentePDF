@@ -1,0 +1,29 @@
+.message {
+    max-width: 80%;
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+}
+
+.user-message {
+    background-color: #e3f2fd;
+    margin-left: auto;
+}
+
+.bot-message {
+    background-color: #f5f5f5;
+    margin-right: auto;
+}
+
+.loading-dots:after {
+    content: '.';
+    animation: dots 1s steps(5, end) infinite;
+}
+
+@keyframes dots {
+    0%, 20% { content: '.'; }
+    40% { content: '..'; }
+    60% { content: '...'; }
+    80% { content: '....'; }
+    100% { content: '.....'; }
+}

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asistente Jurídico AI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-6xl">
+        <!-- Initialization Section -->
+        <div id="init-section" class="mb-8 text-center">
+            <button 
+                id="init-button"
+                class="bg-green-500 text-white px-8 py-3 rounded-lg hover:bg-green-600 transition-colors text-lg font-semibold"
+            >
+                Inicializar Sistema
+            </button>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Chat Section -->
+            <div class="lg:col-span-2">
+                <div class="bg-white rounded-lg shadow-lg p-6">
+                    <h2 class="text-2xl font-bold mb-4">Chat Asistente Jurídico</h2>
+                    <div id="chat-window" class="h-[500px] overflow-y-auto mb-4 p-4 border rounded-lg"></div>
+                    <div class="flex gap-2">
+                        <input 
+                            type="text" 
+                            id="message-input" 
+                            class="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="Escribe tu pregunta aquí..."
+                            disabled
+                        >
+                        <button 
+                            id="send-button"
+                            class="bg-blue-500 text-white px-6 py-2 rounded-lg hover:bg-blue-600 transition-colors disabled:bg-gray-400"
+                            disabled
+                        >
+                            Enviar
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PDF Management Section -->
+            <div class="bg-white rounded-lg shadow-lg p-6">
+                <h2 class="text-2xl font-bold mb-4">Archivos PDF</h2>
+                <div class="mb-4">
+                    <button 
+                        id="upload-button"
+                        class="w-full bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors"
+                    >
+                        Subir nuevo PDF
+                    </button>
+                    <input 
+                        type="file" 
+                        id="file-input" 
+                        accept=".pdf" 
+                        class="hidden"
+                        multiple
+                    >
+                </div>
+                <ul id="file-list" class="space-y-2 max-h-[400px] overflow-y-auto"></ul>
+            </div>
+        </div>
+
+        <!-- Sources Section -->
+        <div id="sources-section" class="mt-8 bg-white rounded-lg shadow-lg p-6 hidden">
+            <h3 class="text-xl font-bold mb-4">Fuentes consultadas</h3>
+            <div id="sources-list" class="space-y-2"></div>
+        </div>
+
+        <!-- Notification Messages -->
+        <div id="error-message" class="hidden fixed bottom-4 right-4 bg-red-500 text-white px-6 py-3 rounded-lg"></div>
+        <div id="success-message" class="hidden fixed bottom-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg"></div>
+    </div>
+
+    <!-- Firebase Scripts -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.3.1/firebase-app.js";
+        import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.3.1/firebase-analytics.js";
+        import { getStorage, ref, uploadBytes, listAll, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/11.3.1/firebase-storage.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyDfLe_BqaJ45xJeE08yjLsuYh3_-FPRfbY",
+            authDomain: "asistentejuridico-90176.firebaseapp.com",
+            projectId: "asistentejuridico-90176",
+            storageBucket: "asistentejuridico-90176.firebasestorage.app",
+            messagingSenderId: "495048449457",
+            appId: "1:495048449457:web:3e903f0184d1db72ea3190",
+            measurementId: "G-SXQCERQLYB"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const analytics = getAnalytics(app);
+        const storage = getStorage(app);
+
+        // Make Firebase storage available globally
+        window.firebaseStorage = {
+            storage,
+            ref,
+            uploadBytes,
+            listAll,
+            getDownloadURL,
+            deleteObject
+        };
+    </script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

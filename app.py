@@ -1,324 +1,176 @@
-import streamlit as st
+from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-import os
-import re
-from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
-from dotenv import load_dotenv
+from pinecone import Pinecone, ServerlessSpec
 import google.generativeai as genai
+import tiktoken
+import os
+import sys
 
+# Configurar Gemini API
+GOOGLE_API_KEY = "AIzaSyA0iPQ5Y3up5RVtB7bfax8Yj_A4UwQzSZM"
+genai.configure(api_key=GOOGLE_API_KEY)
 
-# Cargar variables de entorno
-load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+def count_tokens(text, model="cl100k_base"):
+    tokenizer = tiktoken.get_encoding(model)
+    return len(tokenizer.encode(text))
 
-# Configuración del modelo Gemini
-MODEL_CONFIG = {
-    "temperature": 0.2,
-    "top_p": 1,
-    "top_k": 32,
-    "max_output_tokens": 4096,
-}
-
-def get_gemini_model():
-    """Inicializa y retorna el modelo Gemini Pro Vision para procesar PDFs"""
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        return model
-    except Exception as e:
-        st.error(f"Error al inicializar el modelo Gemini: {str(e)}")
-        return None
-def clean_extracted_text(text):
-    """Limpia y normaliza el texto extraído"""
+def truncate_text(text, max_tokens=96):
     if not text:
         return ""
+    tokenizer = tiktoken.get_encoding("cl100k_base")
+    tokens = tokenizer.encode(text)
+    if len(tokens) > max_tokens:
+        tokens = tokens[:max_tokens]
+    return tokenizer.decode(tokens)
+
+def initialize_pinecone():
+    api_key = "pcsk_3p1ned_FNyRBj8sYrAoNiKgzH8CnJcYHEcyRzBxj25GNuUHavhBXxjcAwDA22DBpi34Vpw"
+    pc = Pinecone(api_key=api_key)
     
-    # Eliminar caracteres no imprimibles
-    text = ''.join(char for char in text if char.isprintable() or char in ['\n', '\t'])
+    index_name = "multilingual-e5-large"
+    if index_name not in pc.list_indexes().names():
+        pc.create_index(
+            name=index_name,
+            dimension=1024,
+            metric="cosine",
+            spec=ServerlessSpec(
+                cloud="aws",
+                region="us-east-1"
+            )
+        )
     
-    # Normalizar espacios en blanco
-    text = re.sub(r'\s+', ' ', text)
+    return pc, pc.Index(index_name)
+
+def process_documents():
+    loader = PyPDFDirectoryLoader("pdfs")
+    data = loader.load()
     
-    # Eliminar líneas vacías múltiples
-    text = re.sub(r'\n\s*\n', '\n\n', text)
+    # Usar un tamaño de chunk más pequeño para evitar exceder el límite
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=200,  # Reducido para asegurar que no exceda 96 tokens
+        chunk_overlap=10
+    )
+    docs = text_splitter.split_documents(data)
+    print(f"Se han dividido {len(docs)} documentos.")
     
-    # Asegurar que hay contenido sustancial
-    if len(text.strip()) < 10:  # Ajusta este número según tus necesidades
-        return ""
+    # Truncar cada documento a 96 tokens
+    processed_docs = []
+    for doc in docs:
+        truncated_content = truncate_text(doc.page_content, max_tokens=96)
+        if truncated_content:  # Solo agregar si hay contenido después de truncar
+            doc.page_content = truncated_content
+            processed_docs.append(doc)
+    
+    return processed_docs
+
+def create_embeddings_and_upload(pc, index, docs):
+    # Procesar documentos en lotes para evitar sobrecarga
+    batch_size = 100
+    for i in range(0, len(docs), batch_size):
+        batch_docs = docs[i:i + batch_size]
         
-    return text.strip()
-def process_pdf_with_gemini(pdf_file):
-    """Procesa el PDF con Gemini Pro Vision usando el método de carga de archivos"""
-    try:
-        # Guardar temporalmente el archivo
-        temp_path = f"temp_{pdf_file.name}"
-        with open(temp_path, "wb") as f:
-            f.write(pdf_file.getvalue())
+        # Asegurar que cada texto está dentro del límite
+        texts = [truncate_text(doc.page_content, max_tokens=96) for doc in batch_docs]
+        texts = [text for text in texts if text]  # Eliminar textos vacíos
+        
+        if not texts:
+            continue
         
         try:
-            # Cargar el archivo usando el método recomendado por Google
-            uploaded_file = genai.upload_file(temp_path)
-            
-            # Obtener el modelo
-            model = get_gemini_model()
-            if not model:
-                return None
-            
-            # Instrucciones mejoradas para el procesamiento de PDFs escaneados
-            prompt = """
-            Analiza este documento PDF y extrae todo su contenido textual. Es muy importante que:
-
-            1. Si el documento es un PDF escaneado o contiene imágenes:
-               - Realiza OCR detallado de TODO el texto visible
-               - No omitas ningún texto, por pequeño que sea
-               - Incluye números, fechas y datos específicos
-               - Mantén el formato original (títulos, subtítulos, párrafos)
-
-            2. Estructura el contenido de forma clara:
-               - Respeta la jerarquía del documento
-               - Preserva la separación entre secciones
-               - Mantén el orden original del texto
-
-            3. Asegúrate de incluir:
-               - Texto en márgenes o notas al pie
-               - Encabezados y pies de página
-               - Tablas y su contenido
-               - Listas y enumeraciones
-
-            Extrae absolutamente todo el contenido textual visible en el documento.
-            """
-            
-            # Procesar con Gemini usando el archivo cargado
-            response = model.generate_content(
-                contents=[prompt, uploaded_file],
-                generation_config=MODEL_CONFIG
+            embeddings = pc.inference.embed(
+                model="multilingual-e5-large",
+                inputs=texts,
+                parameters={"input_type": "passage", "truncate": "END"}
             )
             
-            # Limpiar y validar el texto extraído
-            extracted_text = clean_extracted_text(response.text)
+            vectors = []
+            for j, (doc, embedding) in enumerate(zip(batch_docs, embeddings)):
+                vectors.append({
+                    "id": f"doc_{i+j}",
+                    "values": embedding['values'],
+                    "metadata": {'text': doc.page_content}
+                })
             
-            # Validar que se extrajo contenido útil
-            if not extracted_text:
-                st.warning(f"⚠️ El texto extraído de {pdf_file.name} está vacío después de la limpieza")
-                return None
+            if vectors:
+                index.upsert(
+                    vectors=vectors,
+                    namespace="example-namespace"
+                )
                 
-            # Mostrar información sobre el texto extraído
-            st.info(f"📄 Texto extraído de {pdf_file.name}: {len(extracted_text)} caracteres")
+            print(f"Procesado lote {i//batch_size + 1} de {(len(docs) + batch_size - 1)//batch_size}")
             
-            return extracted_text
-            
-        finally:
-            # Limpiar el archivo temporal
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        
-    except Exception as e:
-        st.error(f"Error al procesar el PDF: {str(e)}")
-        return None
-
-
-def get_pdf_text(pdf_docs):
-    """Procesa múltiples PDFs"""
-    text = ""
-    for pdf in pdf_docs:
-        try:
-            st.info(f"Procesando {pdf.name} con Gemini Pro Vision...")
-            
-            # Verificar el tamaño del archivo
-            file_size = len(pdf.getvalue())
-            size_mb = file_size / (1024 * 1024)
-            st.info(f"Tamaño del archivo: {size_mb:.2f} MB")
-            
-            # Procesar PDF con Gemini
-            pdf_text = process_pdf_with_gemini(pdf)
-            
-            if pdf_text:
-                text += f"\n--- Documento: {pdf.name} ---\n{pdf_text}\n"
-                st.success(f"✅ {pdf.name} procesado exitosamente")
-            else:
-                st.warning(f"⚠️ No se pudo extraer texto de {pdf.name}")
-                
         except Exception as e:
-            st.error(f"❌ Error procesando {pdf.name}: {str(e)}")
+            print(f"Error en lote {i//batch_size + 1}: {str(e)}")
             continue
-    
-    if not text.strip():
-        st.error("No se pudo extraer texto de ninguno de los PDFs.")
-        return None
-    
-    return text
 
-def get_text_chunks(text):
-    """Divide el texto en fragmentos con configuración optimizada"""
-    if not text:
-        return None
-    
+def get_gemini_response(query, context):
     try:
-        # Configuración más granular para el divisor de texto
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,  # Chunks más pequeños para mejor procesamiento
-            chunk_overlap=50,  # Menor superposición
-            length_function=len,
-            separators=["\n\n", "\n", " ", ""]  # Separadores más específicos
-        )
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Truncar el contexto si es muy largo
+        context = truncate_text(context, max_tokens=500)  # Usar un límite mayor para Gemini
+        prompt = f"""
+        Contexto: {context}
+        Pregunta: {query}
+        Por favor, responde la pregunta basándote únicamente en la información proporcionada en el contexto anterior.
+        """
         
-        chunks = text_splitter.split_text(text)
-        
-        # Validar los chunks
-        valid_chunks = [chunk for chunk in chunks if len(chunk.strip()) > 50]  # Filtrar chunks muy pequeños
-        
-        if not valid_chunks:
-            st.error("No se pudieron generar fragmentos de texto válidos.")
-            return None
-        
-        # Mostrar información sobre los chunks
-        st.info(f"📑 Chunks generados: {len(valid_chunks)}")
-        
-        return valid_chunks
-        
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
-        st.error(f"Error al dividir el texto: {str(e)}")
-        return None
-
-def get_vector_store(text_chunks):
-    """Genera los embeddings y almacena en FAISS con validación mejorada"""
-    if not text_chunks:
-        return None
-
-    try:
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        
-        # Validar cada chunk antes de crear embeddings
-        valid_chunks = []
-        for i, chunk in enumerate(text_chunks):
-            try:
-                # Intentar crear un embedding de prueba
-                _ = embeddings.embed_query(chunk)
-                valid_chunks.append(chunk)
-            except Exception as e:
-                st.warning(f"Chunk {i} ignorado: no se pudo crear embedding")
-                continue
-        
-        if not valid_chunks:
-            st.error("No se pudieron crear embeddings válidos.")
-            return None
-        
-        # Crear el vector store con los chunks válidos
-        vector_store = FAISS.from_texts(valid_chunks, embedding=embeddings)
-        
-        # Crear directorio para el índice si no existe
-        os.makedirs("faiss_index", exist_ok=True)
-        
-        # Guardar el índice y los datos
-        vector_store.save_local("faiss_index")
-        
-        # Mostrar información sobre el vector store
-        st.info(f"💾 Vector store creado con {len(valid_chunks)} chunks")
-        
-        return vector_store
-        
-    except Exception as e:
-        st.error(f"Error al crear el vector store: {str(e)}")
-        return None
-
-def get_qa_chain():
-    """Configura el modelo de IA para responder preguntas"""
-    prompt_template = """
-    Responde la pregunta de la manera más detallada posible usando el contexto proporcionado.
-    Si la respuesta no está en el contexto, di "No encontré esa información en el documento".
-    No inventes información que no esté en el contexto.
-    
-    Contexto:
-    {context}
-    
-    Pregunta:
-    {question}
-    
-    Respuesta:
-    """
-
-    PROMPT = PromptTemplate(
-        template=prompt_template,
-        input_variables=["context", "question"]
-    )
-
-    model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
-    
-    return PROMPT, model
-
-def user_input(user_question):
-    """Maneja las preguntas del usuario"""
-    try:
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        
-        # Cargar el índice FAISS con la opción de deserialización segura
-        vector_store = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-        
-        # Obtener el prompt y el modelo
-        prompt, llm = get_qa_chain()
-        
-        # Crear la cadena de QA
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=vector_store.as_retriever(),
-            chain_type_kwargs={"prompt": prompt}
-        )
-        
-        # Obtener la respuesta
-        response = qa_chain.invoke({"query": user_question})
-        
-        if response and "result" in response:
-            st.write("Respuesta:", response["result"])
-        else:
-            st.error("No se pudo generar una respuesta.")
-
-    except Exception as e:
-        st.error(f"Error al procesar la pregunta: {str(e)}")
+        return f"Error al procesar la respuesta con Gemini: {str(e)}"
 
 def main():
-    """Aplicación principal"""
-    st.set_page_config(page_title="Chat PDF con Gemini 1.5")
-    st.header("Chat con PDFs usando Gemini 1.5 Flash 📚")
+    print("Inicializando el sistema...")
+    pc, index = initialize_pinecone()
+    docs = process_documents()
     
-    # Agregar advertencia de seguridad
-    if not os.path.exists("faiss_index"):
-        st.warning("""
-        ⚠️ Nota de seguridad: Esta aplicación utiliza almacenamiento local para los índices FAISS. 
-        Solo procese documentos de fuentes confiables, ya que el sistema necesita deserializar 
-        datos almacenados localmente.
-        """)
-    
-    with st.sidebar:
-        st.title("📁 Menú")
-        pdf_docs = st.file_uploader(
-            "Sube tus archivos PDF y haz clic en Procesar",
-            accept_multiple_files=True,
-            type=['pdf']
-        )
+    if not docs:
+        print("No se encontraron documentos válidos para procesar.")
+        return
         
-        if st.button("🚀 Procesar PDFs"):
-            if not pdf_docs:
-                st.error("Por favor, sube al menos un archivo PDF.")
-                return
-                
-            with st.spinner("Procesando documentos..."):
-                raw_text = get_pdf_text(pdf_docs)
-                if raw_text:
-                    text_chunks = get_text_chunks(raw_text)
-                    if text_chunks:
-                        vector_store = get_vector_store(text_chunks)
-                        if vector_store:
-                            st.success("¡Procesamiento completado! 🎉")
-                            st.info("Ahora puedes hacer preguntas sobre el contenido de los PDFs")
-
-    # Área de chat
-    st.subheader("💭 Pregunta sobre tus documentos")
-    user_question = st.text_input("Escribe tu pregunta aquí:")
-    if user_question:
-        user_input(user_question)
+    create_embeddings_and_upload(pc, index, docs)
+    
+    print("\n¡Bienvenido al chatbot de documentos PDF! (Escribe 'exit' para salir)")
+    
+    while True:
+        user_input = input("\nTu pregunta: ").strip()
+        
+        if user_input.lower() == 'exit':
+            print('¡Hasta luego!')
+            sys.exit()
+        
+        if user_input == '':
+            continue
+        
+        try:
+            query_text = truncate_text(user_input, max_tokens=96)
+            
+            query_embedding = pc.inference.embed(
+                model="multilingual-e5-large",
+                inputs=[query_text],
+                parameters={"input_type": "query"}
+            )
+            
+            results = index.query(
+                namespace="example-namespace",
+                vector=query_embedding[0]['values'],
+                top_k=3,
+                include_values=False,
+                include_metadata=True
+            )
+            
+            context = " ".join([match['metadata']['text'] for match in results['matches']])
+            response = get_gemini_response(user_input, context)
+            
+            print("\nRespuesta:", response)
+            print("\nFuentes utilizadas:")
+            for i, match in enumerate(results['matches'], 1):
+                print(f"\nFuente {i}:")
+                print(match['metadata']['text'])
+            
+        except Exception as e:
+            print(f"\nError: {str(e)}")
+            print("Por favor, intenta de nuevo.")
 
 if __name__ == "__main__":
     main()
