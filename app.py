@@ -1,5 +1,6 @@
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from sentence_transformers import SentenceTransformer
 from pinecone import Pinecone, ServerlessSpec
 import google.generativeai as genai
 import tiktoken
@@ -9,6 +10,9 @@ import sys
 # Configurar Gemini API
 GOOGLE_API_KEY = "AIzaSyA0iPQ5Y3up5RVtB7bfax8Yj_A4UwQzSZM"
 genai.configure(api_key=GOOGLE_API_KEY)
+
+# Cargar modelo de embeddings
+embedding_model = SentenceTransformer("intfloat/multilingual-e5-large")
 
 def count_tokens(text, model="cl100k_base"):
     tokenizer = tiktoken.get_encoding(model)
@@ -64,41 +68,33 @@ def process_documents():
     return processed_docs
 
 def create_embeddings_and_upload(pc, index, docs):
-    # Procesar documentos en lotes para evitar sobrecarga
     batch_size = 100
     for i in range(0, len(docs), batch_size):
         batch_docs = docs[i:i + batch_size]
         
         # Asegurar que cada texto está dentro del límite
-        texts = [truncate_text(doc.page_content, max_tokens=96) for doc in batch_docs]
+        texts = [doc.page_content for doc in batch_docs]
         texts = [text for text in texts if text]  # Eliminar textos vacíos
         
         if not texts:
             continue
         
         try:
-            embeddings = pc.inference.embed(
-                model="multilingual-e5-large",
-                inputs=texts,
-                parameters={"input_type": "passage", "truncate": "END"}
-            )
-            
+            embeddings = embedding_model.encode(texts, convert_to_numpy=True)
+
             vectors = []
             for j, (doc, embedding) in enumerate(zip(batch_docs, embeddings)):
                 vectors.append({
                     "id": f"doc_{i+j}",
-                    "values": embedding['values'],
+                    "values": embedding.tolist(),
                     "metadata": {'text': doc.page_content}
                 })
-            
+
             if vectors:
-                index.upsert(
-                    vectors=vectors,
-                    namespace="example-namespace"
-                )
-                
+                index.upsert(vectors=vectors, namespace="example-namespace")
+
             print(f"Procesado lote {i//batch_size + 1} de {(len(docs) + batch_size - 1)//batch_size}")
-            
+
         except Exception as e:
             print(f"Error en lote {i//batch_size + 1}: {str(e)}")
             continue
@@ -145,15 +141,11 @@ def main():
         try:
             query_text = truncate_text(user_input, max_tokens=96)
             
-            query_embedding = pc.inference.embed(
-                model="multilingual-e5-large",
-                inputs=[query_text],
-                parameters={"input_type": "query"}
-            )
+            query_embedding = embedding_model.encode([query_text])[0].tolist()
             
             results = index.query(
                 namespace="example-namespace",
-                vector=query_embedding[0]['values'],
+                vector=query_embedding,
                 top_k=3,
                 include_values=False,
                 include_metadata=True

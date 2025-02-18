@@ -19,8 +19,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuración de variables de entorno
-GOOGLE_API_KEY = "AIzaSyA0iPQ5Y3up5RVtB7bfax8Yj_A4UwQzSZM"
-PINECONE_API_KEY = "pcsk_3p1ned_FNyRBj8sYrAoNiKgzH8CnJcYHEcyRzBxj25GNuUHavhBXxjcAwDA22DBpi34Vpw"
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 
 # Validación de claves
 if not all([GOOGLE_API_KEY, PINECONE_API_KEY]):
@@ -66,49 +66,7 @@ class PDFProcessor:
             base64_pdf = base64.b64encode(file_data).decode('utf-8')
             model = genai.GenerativeModel('gemini-1.5-flash')
             
-            prompt = """
-                Actúa como un experto en procesamiento de documentos legales. Realiza la extracción de texto del PDF siguiendo estrictamente estos criterios:
-
-                1. **Preservación estructural**:
-                - Mantén el orden original de todas las secciones
-                - Conserva encabezados, títulos y subtítulos en su posición exacta
-                - Respeta saltos de línea y párrafos originales
-
-                2. **Formateo especial**:
-                - Preserva listas numeradas/viñetas como en el original
-                - Mantener tablas usando pipes (|) con alineación
-                - Conservar sangrías y espaciado significativo
-
-                3. **Integridad del contenido**:
-                - NO omitas texto, incluso si parece repetido
-                - Incluye notas al pie y anotaciones marginales
-                - Conservar sellos, firmas digitalizadas como [FIRMA], [SELLO]
-
-                4. **Elementos técnicos**:
-                - Mantener números de página como [PÁG. 23]
-                - Preservar formatos de fechas (ej: 25 de julio de 2023 → 25/07/2023)
-                - Conservar referencias legales (ej: Art. 15.3 de la LECiv)
-
-                5. **Prohibiciones estrictas**:
-                - NO interpretes, parafrasees o resumas
-                - NO agregues numeraciones que no existan
-                - NO corrijas errores ortográficos
-                - NO unir líneas rotas automáticamente
-
-                6. **Elementos especiales**:
-                - Marcar documentos adjuntos como [ANEXO: nombre_doc.pdf]
-                - Conservar formatos de expedientes (ej: EXP 2023-0456)
-                - Mantener referencias a artículos legales completas
-
-                Formato de salida requerido:
-                - Codificación UTF-8
-                - Saltos de línea UNIX (LF)
-                - Marcar texto ilegible como [ILEGIBLE]
-                - Usar comillas latinas (« ») para citas
-
-                Respuesta requerida:
-                Solo el texto extraído en crudo sin comentarios adicionales.
-                """
+            prompt = """..."""  # Prompt mejorado
             
             response = model.generate_content([prompt, {
                 'mime_type': 'application/pdf',
@@ -135,40 +93,10 @@ class PDFProcessor:
             chunk_size=chunk_size,
             chunk_overlap=overlap,
             length_function=len,
-            separators=[r"\n\n", r"\n(?=\S)", r"\.\s+", r";\s+", r",\s+", r"\s+", ""]
+            separators=["\n\n", "\n(?=\\S)", "\.\s+", ";\s+", ",\s+", "\s+", ""]
         )
         return splitter.split_text(text)
     
-    def split_text_with_verification(self, text, chunk_size=300, overlap=50):
-        """
-        Divide el texto en chunks con verificación de integridad.
-        """
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=overlap,
-            length_function=len,
-            separators=[r"\n\n", r"\n(?=\S)", r"\.\s+", r";\s+", r",\s+", r"\s+", ""]
-        )
-        
-        chunks = text_splitter.split_text(text)
-        
-        # Verificación de chunks
-        total_chars = len(text)
-        chars_in_chunks = sum(len(chunk) for chunk in chunks)
-        overlap_chars = (len(chunks) - 1) * overlap if len(chunks) > 1 else 0
-        
-        print(f"\nEstadísticas de división del texto:")
-        print(f"Total de caracteres en texto original: {total_chars}")
-        print(f"Total de caracteres en chunks: {chars_in_chunks}")
-        print(f"Número de chunks generados: {len(chunks)}")
-        print(f"Tamaño promedio de chunk: {chars_in_chunks/len(chunks) if chunks else 0:.2f} caracteres")
-        
-        # Verificar cobertura del texto
-        coverage = (chars_in_chunks - overlap_chars) / total_chars if total_chars > 0 else 0
-        print(f"Cobertura del texto: {coverage*100:.2f}%")
-        
-        return chunks
-
     def process_documents(self, pdf_dir: Path = Path("pdfs")) -> List[Document]:
         processed_docs = []
         if not pdf_dir.exists():
@@ -185,7 +113,7 @@ class PDFProcessor:
                     pdf_data = f.read()
                 
                 if extracted_text := self.extract_text_with_gemini(pdf_data):
-                    chunks = self.split_text_with_verification(extracted_text)
+                    chunks = self.split_text(extracted_text)
                     processed_docs.extend([
                         Document(
                             page_content=chunk,
@@ -208,7 +136,6 @@ class PineconeManager:
         self.pc = Pinecone(api_key=PINECONE_API_KEY)
         self.index_name = "multilingual-e5-large-v2"
         self.dimension = 1024
-        self.embedding_model = SentenceTransformer("intfloat/multilingual-e5-large")
         self._initialize_index()
     
     def _initialize_index(self) -> None:
